@@ -21,4 +21,5 @@ CTR mode encrypted data has the following file format:
 - 32 byte key is derived with scrypt from password
 - the first 2 blocks of the ciphertext are a random password validator:
     - check if AES256(validator[1st block], key=0) == validator[2nd block]
+
 => I think this is secure, but most likely it's not
