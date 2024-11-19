@@ -6,6 +6,7 @@ This was made because I did not like the vim gpg plugin and wanted to implement 
 - in /etc/doas.conf add:
     - permit keepenv nopass root as <your user>
     - permit nopass <your user> cmd <absolute path to copen>
+
 Then you can encrypt a file with "aes encrypt file.txt file.txt" and open it in neovim
 with "copen file.txt". This will decrypt the file and put the plaintext into a newly
 mounted mfs (memory file system) directory /tmp/aes-decrypted-dir/.
