@@ -9,6 +9,7 @@ pub fn build(b: *Build) !void {
         .target = target,
         .optimize = optimize,
     });
+    exe.linkLibC();
     const cli = b.dependency("zig-cli", .{
         .target = target,
         .optimize = optimize,
