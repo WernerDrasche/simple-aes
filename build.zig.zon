@@ -1,0 +1,10 @@
+.{
+    .name = "simple-aes",
+    .version = "0.0.1",
+    .dependencies = .{
+        .@"zig-cli" = .{
+            .url = "https://github.com/sam701/zig-cli/archive/refs/tags/last-working-with-zig-0.11.tar.gz",
+            .hash = "12206ccc06b129fa80f6f6354f0e5990d52cafe054b446caf38d4d18c069dae06033",
+        },
+    },
+}
