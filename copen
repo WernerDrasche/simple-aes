@@ -19,7 +19,7 @@ if [ ! -z "$2" ]; then
     CMD=$@
 fi
 
-FILE=$(basename $FILEPATH)
+FILE=$(basename "$FILEPATH")
 TMP_FOLDER=/tmp/aes-decrypted-dir/
 DEST=$TMP_FOLDER/$FILE
 mkdir -p $TMP_FOLDER
@@ -36,11 +36,11 @@ stty echo
 echo
 
 set +e
-/home/$NORMAL_USER/.local/bin/aes -m ctr -p $PASS decrypt $FILEPATH $DEST
+/home/$NORMAL_USER/.local/bin/aes -m ctr -p $PASS decrypt "$FILEPATH" "$DEST"
 if [ $? -eq 0 ]; then
-    chown $NORMAL_USER: $DEST
-    doas -u $NORMAL_USER $CMD $TMP_FOLDER/$FILE
-    /home/$NORMAL_USER/.local/bin/aes -m ctr -p $PASS encrypt $DEST $FILEPATH
+    chown $NORMAL_USER: "$DEST"
+    doas -u $NORMAL_USER $CMD "${TMP_FOLDER}/${FILE}"
+    /home/$NORMAL_USER/.local/bin/aes -m ctr -p $PASS encrypt "$DEST" "$FILEPATH"
 fi
 set -e
 umount $TMP_FOLDER
