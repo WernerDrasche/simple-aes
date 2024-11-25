@@ -105,7 +105,7 @@ fn toggleTermEcho() void {
 }
 
 pub fn main() !void {
-    config.passwd.len = ~@as(usize, 0);
+    config.passwd.ptr = @ptrFromInt(1);
     return cli.run(&app, allocator);
 }
 
@@ -120,16 +120,16 @@ fn decrypt() anyerror!void {
 }
 
 fn generateValidator(out: *[32]u8) void {
-    var state: AES(256) = undefined;
-    state.installKey([_]u8{0} ** 32);
+    var state: AES = undefined;
+    state.installKey(32, &[_]u8{0} ** 32);
     const data = out[0..16];
     Random.bytes(data);
     state.encrypt(data, out[16..32]);
 }
 
 fn checkValidator(data: *[32]u8) bool {
-    var state: AES(256) = undefined;
-    state.installKey([_]u8{0} ** 32);
+    var state: AES = undefined;
+    state.installKey(32, &[_]u8{0} ** 32);
     var out: [16]u8 = undefined;
     state.encrypt(data[0..16], &out);
     return std.mem.eql(u8, &out, data[16..32]);
@@ -137,7 +137,7 @@ fn checkValidator(data: *[32]u8) bool {
 
 fn run() !void {
     var free_passwd = false;
-    if (config.passwd.len == ~@as(usize, 0)) {
+    if (config.passwd.ptr == @as([*]const u8, @ptrFromInt(1))) {
         toggleTermEcho();
         free_passwd = true;
         try stdout.writeAll("Password: ");
@@ -158,8 +158,8 @@ fn run() !void {
     }
     var key: [32]u8 = undefined;
     try KDF.kdf(allocator, &key, config.passwd, salt, kdf_config);
-    var aes: AES(256) = undefined;
-    aes.installKey(key);
+    var aes: AES = undefined;
+    aes.installKey(key.len, &key);
     const cwd = std.fs.cwd();
     const infile = cwd.openFile(config.infile, .{}) catch |err| {
         if (err == error.FileNotFound) {

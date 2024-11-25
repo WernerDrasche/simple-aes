@@ -159,378 +159,374 @@ fn mul(a: u8, b: u8) u8 {
     return from_exp[eres];
 }
 
-fn State(comptime rounds: comptime_int, comptime kwords: comptime_int) type {
-    return struct {
-        state: [4][4]u8,
-        transposed: bool,
-        keys: [4 * (rounds + 1)][4]u8,
+pub const AES = struct {
+    const max_rounds = 14;
 
-        const Transposition = enum { cols, rows };
-        const Self = @This();
+    state: [4][4]u8,
+    transposed: bool,
+    keys: [4 * (max_rounds + 1)][4]u8,
+    rounds: u8,
+    kwords: u8,
 
-        pub fn format(self: Self, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) std.os.WriteError!void {
-            const state = if (self.transposed) transpose(&self.state) else self.state;
-            for (state) |w| {
-                for (w) |b| {
-                    try writer.print("{x:0>2} ", .{b});
-                }
-                try writer.writeByte('\n');
+    const Transposition = enum { cols, rows };
+    const Self = @This();
+
+    pub fn format(self: Self, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) std.os.WriteError!void {
+        const state = if (self.transposed) transpose(&self.state) else self.state;
+        for (state) |w| {
+            for (w) |b| {
+                try writer.print("{x:0>2} ", .{b});
             }
+            try writer.writeByte('\n');
         }
+    }
 
-        ///trans = .cols -> rows become the former columns
-        ///trans = .rows -> no transposition
-        fn ensure(self: *Self, trans: Transposition) void {
-            const t = switch (trans) {
-                .cols => !self.transposed,
-                .rows => self.transposed,
-            };
-            if (t) {
-                self.state = transpose(&self.state);
-                self.transposed = !self.transposed;
-            }
+    ///trans = .cols -> rows become the former columns
+    ///trans = .rows -> no transposition
+    fn ensure(self: *Self, trans: Transposition) void {
+        const t = switch (trans) {
+            .cols => !self.transposed,
+            .rows => self.transposed,
+        };
+        if (t) {
+            self.state = transpose(&self.state);
+            self.transposed = !self.transposed;
         }
+    }
 
-        fn eql(self: Self, other: [4][4]u8) bool {
-            var m: usize = 0;
-            var n: usize = 0;
-            while (m < 4) : (m += 1) {
-                while (n < 4) : (n += 1) {
-                    if (self.state[m][n] != other[m][n]) {
-                        return false;
-                    }
-                }
-            }
-            return true;
-        }
-
-        fn fill(self: *Self, data: *const [16]u8) void {
-            for (data, 0..) |d, i| {
-                self.state[i % 4][i / 4] = d;
-            }
-            self.transposed = false;
-        }
-
-        ///make sure that data is not transposed before calling
-        ///after a normal encrypt/decrypt this is always the case
-        fn copyOut(self: Self, data: []u8) void {
-            assert(data.len == 16);
-            assert(!self.transposed);
-            var n: usize = 0;
+    fn eql(self: Self, other: [4][4]u8) bool {
+        var m: usize = 0;
+        var n: usize = 0;
+        while (m < 4) : (m += 1) {
             while (n < 4) : (n += 1) {
-                var m: usize = 0;
-                while (m < 4) : (m += 1) {
-                    data[n * 4 + m] = self.state[m][n];
+                if (self.state[m][n] != other[m][n]) {
+                    return false;
                 }
             }
         }
+        return true;
+    }
 
-        pub fn installKey(self: *Self, key: [kwords * 4]u8) void {
-            var i: usize = 0;
-            while (i < kwords) : (i += 1) {
-                @memcpy(&self.keys[i], key[4 * i .. 4 * (i + 1)]);
-            }
-            // key expand
-            while (i < 4 * (rounds + 1)) : (i += 1) {
-                var tmp = self.keys[i - 1];
-                if (i % kwords == 0) {
-                    tmp = subWord(rotWord(tmp, 1, .left));
-                    tmp[0] ^= rcon[i / kwords - 1][0];
-                } else if (kwords > 6 and i % kwords == 4) {
-                    tmp = subWord(tmp);
-                }
-                self.keys[i] = xorWords(self.keys[i - kwords], tmp);
-            }
+    fn fill(self: *Self, data: *const [16]u8) void {
+        for (data, 0..) |d, i| {
+            self.state[i % 4][i / 4] = d;
         }
+        self.transposed = false;
+    }
 
-        fn addRoundKey(self: *Self, round: usize) void {
-            self.ensure(.rows);
-            const kcols = transpose(self.keys[4 * round .. 4 * (round + 1)]);
-            var i: usize = 0;
-            while (i < 4) : (i += 1) {
-                self.state[i] = xorWords(self.state[i], kcols[i]);
+    ///make sure that data is not transposed before calling
+    ///after a normal encrypt/decrypt this is always the case
+    fn copyOut(self: Self, data: []u8) void {
+        assert(data.len == 16);
+        assert(!self.transposed);
+        var n: usize = 0;
+        while (n < 4) : (n += 1) {
+            var m: usize = 0;
+            while (m < 4) : (m += 1) {
+                data[n * 4 + m] = self.state[m][n];
             }
         }
+    }
 
-        fn subBytes(self: *Self) void {
-            for (self.state, 0..) |w, i| {
-                self.state[i] = subWord(w);
+    pub fn installKey(self: *Self, comptime bytes: comptime_int, key: *const [bytes]u8) void {
+        comptime assert(bytes & 0x3 == 0);
+        const kwords = bytes / 4;
+        switch (kwords) {
+            4 => self.rounds = 10,
+            6 => self.rounds = 12,
+            8 => self.rounds = 14,
+            else => @compileError("AES accepts only 16, 24 or 32 byte keys"),
+        }
+        self.kwords = kwords;
+        var i: usize = 0;
+        while (i < kwords) : (i += 1) {
+            @memcpy(&self.keys[i], key[4 * i .. 4 * (i + 1)]);
+        }
+        // key expand
+        while (i < 4 * (self.rounds + 1)) : (i += 1) {
+            var tmp = self.keys[i - 1];
+            if (i % kwords == 0) {
+                tmp = subWord(rotWord(tmp, 1, .left));
+                tmp[0] ^= rcon[i / kwords - 1][0];
+            } else if (kwords > 6 and i % kwords == 4) {
+                tmp = subWord(tmp);
             }
+            self.keys[i] = xorWords(self.keys[i - kwords], tmp);
         }
+    }
 
-        fn subBytesInv(self: *Self) void {
-            for (self.state, 0..) |w, i| {
-                self.state[i] = subWordInv(w);
-            }
+    fn addRoundKey(self: *Self, round: usize) void {
+        self.ensure(.rows);
+        const kcols = transpose(self.keys[4 * round .. 4 * (round + 1)]);
+        var i: usize = 0;
+        while (i < 4) : (i += 1) {
+            self.state[i] = xorWords(self.state[i], kcols[i]);
         }
+    }
 
-        fn _shiftRows(self: *Self, comptime rot: Rotation) void {
-            self.ensure(.rows);
-            var i: u8 = 1;
-            while (i < 4) : (i += 1) {
-                self.state[i] = rotWord(self.state[i], i, rot);
-            }
+    fn subBytes(self: *Self) void {
+        for (self.state, 0..) |w, i| {
+            self.state[i] = subWord(w);
         }
+    }
 
-        fn shiftRows(self: *Self) void {
-            self._shiftRows(.left);
+    fn subBytesInv(self: *Self) void {
+        for (self.state, 0..) |w, i| {
+            self.state[i] = subWordInv(w);
         }
+    }
 
-        fn shiftRowsInv(self: *Self) void {
-            self._shiftRows(.right);
+    fn _shiftRows(self: *Self, comptime rot: Rotation) void {
+        self.ensure(.rows);
+        var i: u8 = 1;
+        while (i < 4) : (i += 1) {
+            self.state[i] = rotWord(self.state[i], i, rot);
         }
+    }
 
-        fn mixColumns(self: *Self) void {
-            self.ensure(.cols);
-            const state = &self.state;
-            var i: usize = 0;
-            while (i < 4) : (i += 1) {
-                var tmp: [4]u8 = undefined;
-                // zig fmt: off
-                tmp[0] = mul(state[i][0], 2) ^ mul(state[i][1], 3) ^ state[i][2]         ^ state[i][3];
-                tmp[1] = state[i][0]         ^ mul(state[i][1], 2) ^ mul(state[i][2], 3) ^ state[i][3];
-                tmp[2] = state[i][0]         ^ state[i][1]         ^ mul(state[i][2], 2) ^ mul(state[i][3], 3);
-                tmp[3] = mul(state[i][0], 3) ^ state[i][1]         ^ state[i][2]         ^ mul(state[i][3], 2);
-                // zig fmt: on
-                state[i] = tmp;
-            }
+    fn shiftRows(self: *Self) void {
+        self._shiftRows(.left);
+    }
+
+    fn shiftRowsInv(self: *Self) void {
+        self._shiftRows(.right);
+    }
+
+    fn mixColumns(self: *Self) void {
+        self.ensure(.cols);
+        const state = &self.state;
+        var i: usize = 0;
+        while (i < 4) : (i += 1) {
+            var tmp: [4]u8 = undefined;
+            // zig fmt: off
+            tmp[0] = mul(state[i][0], 2) ^ mul(state[i][1], 3) ^ state[i][2]         ^ state[i][3];
+            tmp[1] = state[i][0]         ^ mul(state[i][1], 2) ^ mul(state[i][2], 3) ^ state[i][3];
+            tmp[2] = state[i][0]         ^ state[i][1]         ^ mul(state[i][2], 2) ^ mul(state[i][3], 3);
+            tmp[3] = mul(state[i][0], 3) ^ state[i][1]         ^ state[i][2]         ^ mul(state[i][3], 2);
+            // zig fmt: on
+            state[i] = tmp;
         }
+    }
 
-        fn mixColumnsInv(self: *Self) void {
-            self.ensure(.cols);
-            const state = &self.state;
-            var i: usize = 0;
-            while (i < 4) : (i += 1) {
-                var tmp: [4]u8 = undefined;
-                // zig fmt: off
-                tmp[0] = mul(state[i][0], 0xe) ^ mul(state[i][1], 0xb) ^ mul(state[i][2], 0xd) ^ mul(state[i][3], 0x9);
-                tmp[1] = mul(state[i][0], 0x9) ^ mul(state[i][1], 0xe) ^ mul(state[i][2], 0xb) ^ mul(state[i][3], 0xd);
-                tmp[2] = mul(state[i][0], 0xd) ^ mul(state[i][1], 0x9) ^ mul(state[i][2], 0xe) ^ mul(state[i][3], 0xb);
-                tmp[3] = mul(state[i][0], 0xb) ^ mul(state[i][1], 0xd) ^ mul(state[i][2], 0x9) ^ mul(state[i][3], 0xe);
-                // zig fmt: on
-                state[i] = tmp;
-            }
+    fn mixColumnsInv(self: *Self) void {
+        self.ensure(.cols);
+        const state = &self.state;
+        var i: usize = 0;
+        while (i < 4) : (i += 1) {
+            var tmp: [4]u8 = undefined;
+            // zig fmt: off
+            tmp[0] = mul(state[i][0], 0xe) ^ mul(state[i][1], 0xb) ^ mul(state[i][2], 0xd) ^ mul(state[i][3], 0x9);
+            tmp[1] = mul(state[i][0], 0x9) ^ mul(state[i][1], 0xe) ^ mul(state[i][2], 0xb) ^ mul(state[i][3], 0xd);
+            tmp[2] = mul(state[i][0], 0xd) ^ mul(state[i][1], 0x9) ^ mul(state[i][2], 0xe) ^ mul(state[i][3], 0xb);
+            tmp[3] = mul(state[i][0], 0xb) ^ mul(state[i][1], 0xd) ^ mul(state[i][2], 0x9) ^ mul(state[i][3], 0xe);
+            // zig fmt: on
+            state[i] = tmp;
         }
+    }
 
-        fn _encrypt(self: *Self, data: *const [16]u8, out: *[16]u8, comptime trace: bool) void {
-            self.fill(data);
-            if (trace) std.debug.print("round 0\n{}\n", .{self});
-            self.addRoundKey(0);
-            var round: u8 = 1;
-            while (round < rounds) : (round += 1) {
-                if (trace) std.debug.print("round {} (addRoundKey {})\n{}\n", .{ round, round - 1, self });
-                self.subBytes();
-                if (trace) std.debug.print("subBytes\n{}\n", .{self});
-                self.shiftRows();
-                if (trace) std.debug.print("shiftRows\n{}\n", .{self});
-                self.mixColumns();
-                if (trace) std.debug.print("mixColumns\n{}\n", .{self});
-                self.addRoundKey(round);
-            }
+    fn _encrypt(self: *Self, data: *const [16]u8, out: *[16]u8, comptime trace: bool) void {
+        self.fill(data);
+        if (trace) std.debug.print("round 0\n{}\n", .{self});
+        self.addRoundKey(0);
+        var round: u8 = 1;
+        while (round < self.rounds) : (round += 1) {
             if (trace) std.debug.print("round {} (addRoundKey {})\n{}\n", .{ round, round - 1, self });
             self.subBytes();
             if (trace) std.debug.print("subBytes\n{}\n", .{self});
             self.shiftRows();
             if (trace) std.debug.print("shiftRows\n{}\n", .{self});
+            self.mixColumns();
+            if (trace) std.debug.print("mixColumns\n{}\n", .{self});
             self.addRoundKey(round);
-            if (trace) std.debug.print("final (addRoundKey {})\n{}\n", .{ round, self });
-            self.copyOut(out);
         }
+        if (trace) std.debug.print("round {} (addRoundKey {})\n{}\n", .{ round, round - 1, self });
+        self.subBytes();
+        if (trace) std.debug.print("subBytes\n{}\n", .{self});
+        self.shiftRows();
+        if (trace) std.debug.print("shiftRows\n{}\n", .{self});
+        self.addRoundKey(round);
+        if (trace) std.debug.print("final (addRoundKey {})\n{}\n", .{ round, self });
+        self.copyOut(out);
+    }
 
-        pub fn encrypt(self: *Self, data: *const [16]u8, out: *[16]u8) void {
-            self._encrypt(data, out, false);
-        }
+    pub fn encrypt(self: *Self, data: *const [16]u8, out: *[16]u8) void {
+        self._encrypt(data, out, false);
+    }
 
-        fn _decrypt(self: *Self, data: *const [16]u8, out: *[16]u8, comptime trace: bool) void {
-            self.fill(data);
-            if (trace) std.debug.print("round {}\n{}\n", .{ rounds, self });
-            self.addRoundKey(rounds);
-            if (trace) std.debug.print("round {} (addRoundKey {})\n{}\n", .{ rounds - 1, rounds, self });
-            var round: u8 = rounds - 1;
-            while (round >= 1) : (round -= 1) {
-                self.shiftRowsInv();
-                if (trace) std.debug.print("shiftRowsInv\n{}\n", .{self});
-                self.subBytesInv();
-                if (trace) std.debug.print("subBytesInv\n{}\n", .{self});
-                self.addRoundKey(round);
-                if (trace) std.debug.print("addRoundKey\n{}\n", .{self});
-                self.mixColumnsInv();
-                if (trace) std.debug.print("round {} (mixColumnsInv {})\n{}\n", .{ round - 1, round, self });
-            }
+    fn _decrypt(self: *Self, data: *const [16]u8, out: *[16]u8, comptime trace: bool) void {
+        self.fill(data);
+        if (trace) std.debug.print("round {}\n{}\n", .{ self.rounds, self });
+        self.addRoundKey(self.rounds);
+        var round: u8 = self.rounds - 1;
+        if (trace) std.debug.print("round {} (addRoundKey {})\n{}\n", .{ round, self.rounds, self });
+        while (round >= 1) : (round -= 1) {
             self.shiftRowsInv();
             if (trace) std.debug.print("shiftRowsInv\n{}\n", .{self});
             self.subBytesInv();
             if (trace) std.debug.print("subBytesInv\n{}\n", .{self});
-            self.addRoundKey(0);
-            if (trace) std.debug.print("final (addRoundKey 0)\n{}\n", .{self});
-            self.copyOut(out);
+            self.addRoundKey(round);
+            if (trace) std.debug.print("addRoundKey\n{}\n", .{self});
+            self.mixColumnsInv();
+            if (trace) std.debug.print("round {} (mixColumnsInv {})\n{}\n", .{ round - 1, round, self });
         }
+        self.shiftRowsInv();
+        if (trace) std.debug.print("shiftRowsInv\n{}\n", .{self});
+        self.subBytesInv();
+        if (trace) std.debug.print("subBytesInv\n{}\n", .{self});
+        self.addRoundKey(0);
+        if (trace) std.debug.print("final (addRoundKey 0)\n{}\n", .{self});
+        self.copyOut(out);
+    }
 
-        pub fn decrypt(self: *Self, data: *const [16]u8, out: *[16]u8) void {
-            self._decrypt(data, out, false);
+    pub fn decrypt(self: *Self, data: *const [16]u8, out: *[16]u8) void {
+        self._decrypt(data, out, false);
+    }
+
+    ///asserts that out.len >= data.len + 16 (for padding)
+    pub fn encryptECB(self: *Self, data: []const u8, out: []u8) usize {
+        assert(out.len >= data.len + 16);
+        const full_blocks_end = data.len & ~@as(usize, 0xf);
+        const rest: u8 = @intCast(data.len & 0xf);
+        var last: [16]u8 = undefined;
+        var i: usize = 0;
+        var end: usize = 0;
+        while (i < full_blocks_end) : (i += 16) {
+            end = i + 16;
+            self.encrypt(@ptrCast(data[i..end]), @ptrCast(out[i..end]));
         }
+        if (rest != 0) {
+            const padding = 16 - rest;
+            @memcpy(last[0..rest], data[end .. end + rest]);
+            @memset(last[rest..], padding);
+        } else {
+            @memset(&last, 16);
+        }
+        self.encrypt(&last, @ptrCast(out[end .. end + 16]));
+        return end + 16;
+    }
 
-        ///asserts that out.len >= data.len + 16 (for padding)
-        pub fn encryptECB(self: *Self, data: []const u8, out: []u8) usize {
-            assert(out.len >= data.len + 16);
-            const full_blocks_end = data.len & ~@as(usize, 0xf);
-            const rest: u8 = @intCast(data.len & 0xf);
-            var last: [16]u8 = undefined;
-            var i: usize = 0;
-            var end: usize = 0;
-            while (i < full_blocks_end) : (i += 16) {
-                end = i + 16;
-                self.encrypt(@ptrCast(data[i..end]), @ptrCast(out[i..end]));
+    ///asserts that out.len >= data.len
+    pub fn decryptECB(self: *Self, data: []const u8, out: []u8) !usize {
+        assert(out.len >= data.len);
+        if (data.len & 0xf != 0)
+            return error.InvalidPadding;
+        var i: usize = 0;
+        var end: usize = 0;
+        while (i < data.len) : (i += 16) {
+            end = i + 16;
+            self.decrypt(@ptrCast(data[i..end]), @ptrCast(out[i..end]));
+        }
+        const padding = out[end - 1];
+        if (padding > 16)
+            return error.InvalidPadding;
+        return end - padding;
+    }
+
+    ///asserts that out.len >= data.len
+    pub fn modeCTR(self: *Self, iv: *const [16]u8, data: []const u8, out: []u8) void {
+        assert(out.len >= data.len);
+        var ctr = iv.*;
+        var key: [16]u8 = undefined;
+        const n = (data.len + 15) & ~@as(usize, 0xf);
+        var i: usize = 0;
+        while (i < n) : (i += 16) {
+            self.encrypt(&ctr, &key);
+            const end = @min(16, data.len - i);
+            var l: usize = 0;
+            while (l < end) : (l += 1) {
+                out[i + l] = data[i + l] ^ key[l];
             }
-            if (rest != 0) {
-                const padding = 16 - rest;
-                @memcpy(last[0..rest], data[end .. end + rest]);
-                @memset(last[rest..], padding);
-            } else {
-                @memset(&last, 16);
-            }
-            self.encrypt(&last, @ptrCast(out[end .. end + 16]));
-            return end + 16;
+            incCtr(&ctr);
         }
+    }
 
-        ///asserts that out.len >= data.len
-        pub fn decryptECB(self: *Self, data: []const u8, out: []u8) !usize {
-            assert(out.len >= data.len);
-            if (data.len & 0xf != 0)
-                return error.InvalidPadding;
-            var i: usize = 0;
-            var end: usize = 0;
-            while (i < data.len) : (i += 16) {
-                end = i + 16;
-                self.decrypt(@ptrCast(data[i..end]), @ptrCast(out[i..end]));
-            }
-            const padding = out[end - 1];
-            if (padding > 16)
-                return error.InvalidPadding;
-            return end - padding;
-        }
+    test ensure {
+        var state: AES = undefined;
+        state.fill(&[_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 });
+        const expected = [_][4]u8{ .{ 0, 1, 2, 3 }, .{ 4, 5, 6, 7 }, .{ 8, 9, 10, 11 }, .{ 12, 13, 14, 15 } };
+        const expected2 = [_][4]u8{ .{ 0, 4, 8, 12 }, .{ 1, 5, 9, 13 }, .{ 2, 6, 10, 14 }, .{ 3, 7, 11, 15 } };
+        state.ensure(.rows);
+        try expect(state.eql(expected2));
+        state.ensure(.cols);
+        try expect(state.eql(expected));
+        state.ensure(.cols);
+        try expect(state.eql(expected));
+        state.ensure(.rows);
+        try expect(state.eql(expected2));
+    }
 
-        ///asserts that out.len >= data.len
-        pub fn modeCTR(self: *Self, iv: *const [16]u8, data: []const u8, out: []u8) void {
-            assert(out.len >= data.len);
-            var ctr = iv.*;
-            var key: [16]u8 = undefined;
-            const n = (data.len + 15) & ~@as(usize, 0xf);
-            var i: usize = 0;
-            while (i < n) : (i += 16) {
-                self.encrypt(&ctr, &key);
-                const end = @min(16, data.len - i);
-                var l: usize = 0;
-                while (l < end) : (l += 1) {
-                    out[i + l] = data[i + l] ^ key[l];
-                }
-                incCtr(&ctr);
-            }
-        }
+    test fill {
+        var state: AES = undefined;
+        state.fill(&[_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 });
+        const expected = [_][4]u8{ .{ 0, 4, 8, 12 }, .{ 1, 5, 9, 13 }, .{ 2, 6, 10, 14 }, .{ 3, 7, 11, 15 } };
+        try expect(state.eql(expected));
+    }
 
-        test ensure {
-            if (rounds != 10) return error.SkipZigTest;
-            var state: AES(128) = undefined;
-            state.fill(&[_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 });
-            const expected = [_][4]u8{ .{ 0, 1, 2, 3 }, .{ 4, 5, 6, 7 }, .{ 8, 9, 10, 11 }, .{ 12, 13, 14, 15 } };
-            const expected2 = [_][4]u8{ .{ 0, 4, 8, 12 }, .{ 1, 5, 9, 13 }, .{ 2, 6, 10, 14 }, .{ 3, 7, 11, 15 } };
-            state.ensure(.rows);
-            try expect(state.eql(expected2));
-            state.ensure(.cols);
-            try expect(state.eql(expected));
-            state.ensure(.cols);
-            try expect(state.eql(expected));
-            state.ensure(.rows);
-            try expect(state.eql(expected2));
-        }
+    test installKey {
+        if (native_endian == .Big) return error.SkipZigTest;
+        var s1: AES = undefined;
+        s1.installKey(16, &.{ 0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c });
+        try expect(@byteSwap(@as(u32, @bitCast(s1.keys[43]))) == 0xb6630ca6);
+        var s2: AES = undefined;
+        s2.installKey(24, &.{ 0x8e, 0x73, 0xb0, 0xf7, 0xda, 0x0e, 0x64, 0x52, 0xc8, 0x10, 0xf3, 0x2b, 0x80, 0x90, 0x79, 0xe5, 0x62, 0xf8, 0xea, 0xd2, 0x52, 0x2c, 0x6b, 0x7b });
+        try expect(@byteSwap(@as(u32, @bitCast(s2.keys[51]))) == 0x01002202);
+        var s3: AES = undefined;
+        s3.installKey(32, &.{ 0x60, 0x3d, 0xeb, 0x10, 0x15, 0xca, 0x71, 0xbe, 0x2b, 0x73, 0xae, 0xf0, 0x85, 0x7d, 0x77, 0x81, 0x1f, 0x35, 0x2c, 0x07, 0x3b, 0x61, 0x08, 0xd7, 0x2d, 0x98, 0x10, 0xa3, 0x09, 0x14, 0xdf, 0xf4 });
+        try expect(@byteSwap(@as(u32, @bitCast(s3.keys[59]))) == 0x706c631e);
+    }
 
-        test fill {
-            if (rounds != 10) return error.SkipZigTest;
-            var state: AES(128) = undefined;
-            state.fill(&[_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 });
-            const expected = [_][4]u8{ .{ 0, 4, 8, 12 }, .{ 1, 5, 9, 13 }, .{ 2, 6, 10, 14 }, .{ 3, 7, 11, 15 } };
-            try expect(state.eql(expected));
-        }
+    test addRoundKey {
+        var state: AES = undefined;
+        var data = [_]u8{ 0x32, 0x43, 0xf6, 0xa8, 0x88, 0x5a, 0x30, 0x8d, 0x31, 0x31, 0x98, 0xa2, 0xe0, 0x37, 0x07, 0x34 };
+        state.fill(&data);
+        const key = [_]u8{ 0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c };
+        state.installKey(key.len, &key);
+        state.addRoundKey(0);
+        const expected = [_][4]u8{ .{ 0x19, 0xa0, 0x9a, 0xe9 }, .{ 0x3d, 0xf4, 0xc6, 0xf8 }, .{ 0xe3, 0xe2, 0x8d, 0x48 }, .{ 0xbe, 0x2b, 0x2a, 0x08 } };
+        try expect(state.eql(expected));
+    }
 
-        test installKey {
-            if (native_endian == .Big or rounds != 10) return error.SkipZigTest;
-            var s1: AES(128) = undefined;
-            s1.installKey(.{ 0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c });
-            try expect(@byteSwap(@as(u32, @bitCast(s1.keys[43]))) == 0xb6630ca6);
-            var s2: AES(192) = undefined;
-            s2.installKey(.{ 0x8e, 0x73, 0xb0, 0xf7, 0xda, 0x0e, 0x64, 0x52, 0xc8, 0x10, 0xf3, 0x2b, 0x80, 0x90, 0x79, 0xe5, 0x62, 0xf8, 0xea, 0xd2, 0x52, 0x2c, 0x6b, 0x7b });
-            try expect(@byteSwap(@as(u32, @bitCast(s2.keys[51]))) == 0x01002202);
-            var s3: AES(256) = undefined;
-            s3.installKey(.{ 0x60, 0x3d, 0xeb, 0x10, 0x15, 0xca, 0x71, 0xbe, 0x2b, 0x73, 0xae, 0xf0, 0x85, 0x7d, 0x77, 0x81, 0x1f, 0x35, 0x2c, 0x07, 0x3b, 0x61, 0x08, 0xd7, 0x2d, 0x98, 0x10, 0xa3, 0x09, 0x14, 0xdf, 0xf4 });
-            try expect(@byteSwap(@as(u32, @bitCast(s3.keys[59]))) == 0x706c631e);
-        }
+    test mixColumns {
+        var state: AES = undefined;
+        state.state = [_][4]u8{ .{ 0xd4, 0xe0, 0xb8, 0x1e }, .{ 0xbf, 0xb4, 0x41, 0x27 }, .{ 0x5d, 0x52, 0x11, 0x98 }, .{ 0x30, 0xae, 0xf1, 0xe5 } };
+        state.transposed = false;
+        state.mixColumns();
+        state.ensure(.rows);
+        const expected = [_][4]u8{ .{ 0x04, 0xe0, 0x48, 0x28 }, .{ 0x66, 0xcb, 0xf8, 0x06 }, .{ 0x81, 0x19, 0xd3, 0x26 }, .{ 0xe5, 0x9a, 0x7a, 0x4c } };
+        try expect(state.eql(expected));
+    }
 
-        test addRoundKey {
-            if (rounds != 10) return error.SkipZigTest;
-            var state: AES(128) = undefined;
-            var data = [_]u8{ 0x32, 0x43, 0xf6, 0xa8, 0x88, 0x5a, 0x30, 0x8d, 0x31, 0x31, 0x98, 0xa2, 0xe0, 0x37, 0x07, 0x34 };
-            state.fill(&data);
-            const key = [_]u8{ 0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c };
-            state.installKey(key);
-            state.addRoundKey(0);
-            const expected = [_][4]u8{ .{ 0x19, 0xa0, 0x9a, 0xe9 }, .{ 0x3d, 0xf4, 0xc6, 0xf8 }, .{ 0xe3, 0xe2, 0x8d, 0x48 }, .{ 0xbe, 0x2b, 0x2a, 0x08 } };
-            try expect(state.eql(expected));
-        }
+    test "ECB" {
+        var state: AES = undefined;
+        var data = [_]u8{ 0x32, 0x43, 0xf6, 0xa8, 0x88, 0x5a, 0x30, 0x8d, 0x31, 0x31, 0x98, 0xa2, 0xe0, 0x37, 0x07, 0x34 };
+        const expected2 = data;
+        const key = [_]u8{ 0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c };
+        state.installKey(key.len, &key);
+        state.encrypt(&data, &data);
+        state.ensure(.rows);
+        const expected = [_][4]u8{ .{ 0x39, 0x02, 0xdc, 0x19 }, .{ 0x25, 0xdc, 0x11, 0x6a }, .{ 0x84, 0x09, 0x85, 0x0b }, .{ 0x1d, 0xfb, 0x97, 0x32 } };
+        try expect(state.eql(expected));
+        state.decrypt(&data, &data);
+        try expect(std.mem.eql(u8, &data, &expected2));
+    }
 
-        test mixColumns {
-            if (rounds != 10) return error.SkipZigTest;
-            var state: AES(128) = undefined;
-            state.state = [_][4]u8{ .{ 0xd4, 0xe0, 0xb8, 0x1e }, .{ 0xbf, 0xb4, 0x41, 0x27 }, .{ 0x5d, 0x52, 0x11, 0x98 }, .{ 0x30, 0xae, 0xf1, 0xe5 } };
-            state.transposed = false;
-            state.mixColumns();
-            state.ensure(.rows);
-            const expected = [_][4]u8{ .{ 0x04, 0xe0, 0x48, 0x28 }, .{ 0x66, 0xcb, 0xf8, 0x06 }, .{ 0x81, 0x19, 0xd3, 0x26 }, .{ 0xe5, 0x9a, 0x7a, 0x4c } };
-            try expect(state.eql(expected));
-        }
-
-        test "ECB" {
-            if (rounds != 10) return error.SkipZigTest;
-            var state: AES(128) = undefined;
-            var data = [_]u8{ 0x32, 0x43, 0xf6, 0xa8, 0x88, 0x5a, 0x30, 0x8d, 0x31, 0x31, 0x98, 0xa2, 0xe0, 0x37, 0x07, 0x34 };
-            const expected2 = data;
-            const key = [_]u8{ 0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c };
-            state.installKey(key);
-            state.encrypt(&data, &data);
-            state.ensure(.rows);
-            const expected = [_][4]u8{ .{ 0x39, 0x02, 0xdc, 0x19 }, .{ 0x25, 0xdc, 0x11, 0x6a }, .{ 0x84, 0x09, 0x85, 0x0b }, .{ 0x1d, 0xfb, 0x97, 0x32 } };
-            try expect(state.eql(expected));
-            state.decrypt(&data, &data);
-            try expect(std.mem.eql(u8, &data, &expected2));
-        }
-
-        test "CTR" {
-            if (rounds != 10) return error.SkipZigTest;
-            var state: AES(128) = undefined;
-            const data = "Hello World! This is a test.";
-            state.installKey([_]u8{99} ** 16);
-            var cipher: [data.len]u8 = undefined;
-            const iv = [_]u8{0} ** 16;
-            state.modeCTR(&iv, data, &cipher);
-            state.modeCTR(&iv, &cipher, &cipher);
-            try expect(std.mem.eql(u8, data, &cipher));
-        }
-    };
-}
-
-pub fn AES(comptime keylen: comptime_int) type {
-    return switch (keylen) {
-        128 => State(10, 4),
-        192 => State(12, 6),
-        256 => State(14, 8),
-        else => unreachable,
-    };
-}
+    test "CTR" {
+        var state: AES = undefined;
+        const data = "Hello World! This is a test.";
+        state.installKey(16, &[_]u8{99} ** 16);
+        var cipher: [data.len]u8 = undefined;
+        const iv = [_]u8{0} ** 16;
+        state.modeCTR(&iv, data, &cipher);
+        state.modeCTR(&iv, &cipher, &cipher);
+        try expect(std.mem.eql(u8, data, &cipher));
+    }
+};
 
 pub fn main() !void {
-    var state: AES(128) = undefined;
+    var state: AES = undefined;
     var data = [_]u8{ 0x32, 0x43, 0xf6, 0xa8, 0x88, 0x5a, 0x30, 0x8d, 0x31, 0x31, 0x98, 0xa2, 0xe0, 0x37, 0x07, 0x34 };
     const key = [_]u8{ 0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c };
-    state.installKey(key);
+    state.installKey(key.len, &key);
     state.encrypt(&data, &data);
     std.debug.print("{}\n", .{std.fmt.fmtSliceHexLower(&data)});
     state._decrypt(&data, &data, true);
@@ -566,5 +562,5 @@ test xorWords {
 }
 
 test {
-    _ = AES(128);
+    _ = AES;
 }
